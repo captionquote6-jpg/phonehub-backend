@@ -1,0 +1,110 @@
+{
+  "database_name": "PhoneHub Upcoming Phones",
+  "database_version": "1.0",
+  "last_updated": "2026-10-02",
+  "target_year": 2027,
+  "record_count": 10,
+  "note": "Upcoming information is reported, rumored, expected, or unconfirmed. Missing specifications are intentionally left blank.",
+  "phones": [
+    {
+      "id": "samsung-galaxy-s27",
+      "brand": "Samsung",
+      "name": "Galaxy S27",
+      "launch_year": 2027,
+      "expected_launch": "Early 2027",
+      "status": "Rumored",
+      "confidence": "Reported",
+      "reported_specs": "Android 17 / One UI 9.0 (reported)"
+    },
+    {
+      "id": "samsung-galaxy-s27-plus",
+      "brand": "Samsung",
+      "name": "Galaxy S27+",
+      "launch_year": 2027,
+      "expected_launch": "Early 2027",
+      "status": "Rumored",
+      "confidence": "Reported",
+      "reported_specs": ""
+    },
+    {
+      "id": "samsung-galaxy-s27-pro",
+      "brand": "Samsung",
+      "name": "Galaxy S27 Pro",
+      "launch_year": 2027,
+      "expected_launch": "Early 2027",
+      "status": "Rumored",
+      "confidence": "Reported",
+      "reported_specs": ""
+    },
+    {
+      "id": "samsung-galaxy-s27-ultra",
+      "brand": "Samsung",
+      "name": "Galaxy S27 Ultra",
+      "launch_year": 2027,
+      "expected_launch": "Early 2027",
+      "status": "Rumored",
+      "confidence": "Reported",
+      "reported_specs": "5,700 mAh battery (rumored)"
+    },
+    {
+      "id": "apple-iphone-18",
+      "brand": "Apple",
+      "name": "iPhone 18",
+      "launch_year": 2027,
+      "expected_launch": "Spring 2027",
+      "status": "Rumored",
+      "confidence": "Reported",
+      "reported_specs": "6.3-inch 1.5K 120Hz LTPO OLED (reported)"
+    },
+    {
+      "id": "apple-iphone-air-2",
+      "brand": "Apple",
+      "name": "iPhone Air 2",
+      "launch_year": 2027,
+      "expected_launch": "Spring 2027",
+      "status": "Rumored",
+      "confidence": "Reported",
+      "reported_specs": "6.55-inch 1.5K 120Hz LTPO OLED (reported)"
+    },
+    {
+      "id": "apple-iphone-18e",
+      "brand": "Apple",
+      "name": "iPhone 18e",
+      "launch_year": 2027,
+      "expected_launch": "Spring 2027",
+      "status": "Rumored",
+      "confidence": "Expected",
+      "reported_specs": ""
+    },
+    {
+      "id": "google-pixel-11a",
+      "brand": "Google",
+      "name": "Pixel 11a",
+      "launch_year": 2027,
+      "expected_launch": "February-March 2027",
+      "status": "Rumored",
+      "confidence": "Reported",
+      "reported_specs": "Tensor G6, 8GB RAM, 6.3-inch 120Hz OLED (reported)"
+    },
+    {
+      "id": "nothing-a006",
+      "brand": "Nothing",
+      "name": "Nothing A006",
+      "launch_year": 2027,
+      "expected_launch": "Early 2027 (possible)",
+      "status": "Unconfirmed",
+      "confidence": "IMEI listing",
+      "reported_specs": ""
+    },
+    {
+      "id": "nothing-a010",
+      "brand": "Nothing",
+      "name": "Nothing A010",
+      "launch_year": 2027,
+      "expected_launch": "Early 2027 (possible)",
+      "status": "Unconfirmed",
+      "confidence": "IMEI listing",
+      "reported_specs": ""
+    }
+  ]
+}
