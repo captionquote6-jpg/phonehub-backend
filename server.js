@@ -1,10 +1,11 @@
-require("dotenv").config();
+﻿require("dotenv").config();
 
 const express = require("express");
 const cors = require("cors");
 const fs = require("fs");
 const path = require("path");
 const readline = require("readline");
+const zlib = require("zlib");
 
 const app = express();
 
@@ -22,7 +23,7 @@ const DATA_DIR = path.join(__dirname, "data");
 
 const GETTECH_INDEX_FILE = path.join(
     DATA_DIR,
-    "gettech-index.jsonl"
+    "gettech-index.jsonl.gz"
 );
 
 const UPCOMING_FILE = path.join(
@@ -162,7 +163,7 @@ function formatDisplay(display) {
         }
 
         if (parts.length > 0) {
-            return parts.join(" • ");
+            return parts.join(" â€¢ ");
         }
     }
 
@@ -504,13 +505,7 @@ async function loadGetTechIndex() {
 
     let failed = 0;
 
-    const input =
-        fs.createReadStream(
-            GETTECH_INDEX_FILE,
-            {
-                encoding: "utf8"
-            }
-        );
+    const input = fs.createReadStream(GETTECH_INDEX_FILE).pipe(zlib.createGunzip()).setEncoding("utf8");
 
     const rl =
         readline.createInterface({
@@ -1716,7 +1711,7 @@ app.get(
                 <div class="box">
 
                     <h1>
-                        📱 PhoneHub API
+                        ðŸ“± PhoneHub API
                     </h1>
 
                     <p>
@@ -1836,3 +1831,7 @@ app.listen(
             );
     }
 );
+
+
+
+
