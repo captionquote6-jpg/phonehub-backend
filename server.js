@@ -2782,6 +2782,130 @@ app.listen(
     }
 );
 
+/* =========================================================
+   API: IMAGE REPORT
+   Checks all phones for direct image availability
+========================================================= */
 
+app.get(
+    "/api/image-report",
+    async (req, res) => {
+
+        try {
+
+            const phones =
+                await loadGetTechIndex();
+
+            let total = phones.length;
+            let directImage = 0;
+            let noDirectImage = 0;
+            let sourceUrlAvailable = 0;
+            let noSourceUrl = 0;
+
+            const noImagePhones = [];
+
+            for (const phone of phones) {
+
+                const image =
+                    extractImageUrl(phone);
+
+                const isProxy =
+                    image &&
+                    image.startsWith(
+                        `${PUBLIC_BASE_URL}/api/phone-image/`
+                    );
+
+                if (
+                    image &&
+                    !isProxy
+                ) {
+
+                    directImage++;
+
+                } else {
+
+                    noDirectImage++;
+
+                    const sources =
+                        Array.isArray(
+                            phone.source_urls
+                        )
+                            ? phone.source_urls
+                                .filter(Boolean)
+                            : [];
+
+                    if (sources.length > 0) {
+
+                        sourceUrlAvailable++;
+
+                    } else {
+
+                        noSourceUrl++;
+
+                    }
+
+                    noImagePhones.push({
+
+                        id:
+                            phone.slug ||
+                            phone.id ||
+                            phone.base_model_slug ||
+                            "",
+
+                        brand:
+                            phone.brand || "",
+
+                        name:
+                            phone.name || "",
+
+                        source_urls:
+                            sources
+
+                    });
+                }
+            }
+
+            return res.json({
+
+                success: true,
+
+                totalPhones:
+                    total,
+
+                directImagePhones:
+                    directImage,
+
+                noDirectImagePhones:
+                    noDirectImage,
+
+                noDirectImageButSourceAvailable:
+                    sourceUrlAvailable,
+
+                noImageAndNoSource:
+                    noSourceUrl,
+
+                noImagePhones:
+                    noImagePhones
+
+            });
+
+        } catch (error) {
+
+            console.log(
+                "Image report error:",
+                error.message
+            );
+
+            return res.status(500).json({
+
+                success: false,
+
+                message:
+                    error.message
+
+            });
+        }
+    }
+);
 
 
