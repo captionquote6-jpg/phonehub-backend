@@ -1064,6 +1064,173 @@ app.get(
 
 
 /* =========================================================
+   GSM ARENA IMAGE RESOLVER
+   Lazy lookup + cache. GSMArena is queried only when an image
+   is actually requested.
+========================================================= */
+
+const gsmArenaImageCache = new Map();
+
+function cleanGsmArenaText(value) {
+    return String(value || "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+function isValidGsmArenaImage(url) {
+    const value = String(url || "").trim();
+    return (
+        /^https?:\/\//i.test(value) &&
+        value.includes("gsmarena.com") &&
+        /\.(?:jpg|jpeg|png|webp)(?:\?|$)/i.test(value)
+    );
+}
+
+function extractGsmArenaSearchResults(html) {
+    const results = [];
+    if (!html) return results;
+
+    const linkRegex = /<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+    let match;
+
+    while ((match = linkRegex.exec(html)) !== null) {
+        const href = match[1];
+        const block = match[2];
+
+        if (!/\.php(?:\?|$)/i.test(href)) continue;
+        if (!/phone|mobile/i.test(href)) continue;
+
+        const titleMatch = block.match(/(?:title|alt)=["']([^"']+)["']/i);
+        const text = titleMatch
+            ? titleMatch[1]
+            : block.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+
+        const absolute = href.startsWith("http")
+            ? href
+            : new URL(href, "https://www.gsmarena.com/").toString();
+
+        results.push({ url: absolute, title: text });
+    }
+
+    return results;
+}
+
+async function resolveImageFromGSMArena(phone) {
+    const cacheKey = String(
+        phone.slug || phone.id || phone.name || ""
+    ).toLowerCase();
+
+    if (cacheKey && gsmArenaImageCache.has(cacheKey)) {
+        return gsmArenaImageCache.get(cacheKey);
+    }
+
+    const brand = String(phone.brand || "").trim();
+    const name = String(phone.name || phone.model || "").trim();
+
+    if (!name) return "";
+
+    const query = [brand, name].filter(Boolean).join(" ");
+    const searchUrl =
+        "https://www.gsmarena.com/res.php3?sSearch=" +
+        encodeURIComponent(query);
+
+    try {
+        console.log(`GSMArena image search: ${query}`);
+
+        const response = await fetch(searchUrl, {
+            redirect: "follow",
+            headers: {
+                "User-Agent":
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36",
+                "Accept":
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9"
+            },
+            signal: AbortSignal.timeout(12000)
+        });
+
+        if (!response.ok) {
+            console.log(`GSMArena search failed: ${response.status}`);
+            if (cacheKey) gsmArenaImageCache.set(cacheKey, "");
+            return "";
+        }
+
+        const html = await response.text();
+        const wanted = cleanGsmArenaText(name);
+        const wantedTokens = wanted.split(" ").filter(x => x.length >= 2);
+        const results = extractGsmArenaSearchResults(html);
+
+        if (!results.length) {
+            if (cacheKey) gsmArenaImageCache.set(cacheKey, "");
+            return "";
+        }
+
+        results.sort((a, b) => {
+            const at = cleanGsmArenaText(a.title);
+            const bt = cleanGsmArenaText(b.title);
+            const as = at === wanted
+                ? 1000
+                : wantedTokens.filter(t => at.includes(t)).length;
+            const bs = bt === wanted
+                ? 1000
+                : wantedTokens.filter(t => bt.includes(t)).length;
+            return bs - as;
+        });
+
+        for (const result of results.slice(0, 5)) {
+            try {
+                const pageResponse = await fetch(result.url, {
+                    redirect: "follow",
+                    headers: {
+                        "User-Agent":
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36",
+                        "Accept": "text/html,application/xhtml+xml"
+                    },
+                    signal: AbortSignal.timeout(12000)
+                });
+
+                if (!pageResponse.ok) continue;
+
+                const pageHtml = await pageResponse.text();
+
+                const imagePatterns = [
+                    /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i,
+                    /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i,
+                    /<img[^>]+src=["'](https?:\/\/[^"']*gsmarena[^"']*bigpic[^"']*)["']/i,
+                    /(https?:\/\/[^\s"']*gsmarena[^\s"']*bigpic[^\s"']*\.(?:jpg|jpeg|png|webp))/i
+                ];
+
+                for (const pattern of imagePatterns) {
+                    const imageMatch = pageHtml.match(pattern);
+                    if (!imageMatch || !imageMatch[1]) continue;
+
+                    const imageUrl = absoluteUrl(
+                        imageMatch[1],
+                        pageResponse.url || result.url
+                    );
+
+                    if (isValidGsmArenaImage(imageUrl)) {
+                        console.log(`GSMArena image found: ${name} -> ${imageUrl}`);
+                        if (cacheKey) gsmArenaImageCache.set(cacheKey, imageUrl);
+                        return imageUrl;
+                    }
+                }
+            } catch (_) {
+                // Try the next search result.
+            }
+        }
+    } catch (error) {
+        console.log(`GSMArena resolver error for ${name}: ${error.message}`);
+    }
+
+    if (cacheKey) gsmArenaImageCache.set(cacheKey, "");
+    return "";
+}
+
+
+/* =========================================================
    IMAGE FALLBACK / PROXY
 ========================================================= */
 
@@ -1126,88 +1293,245 @@ async function resolveImageFromSources(phone) {
         return imageUrlCache.get(id);
     }
 
-    // 1. Known official product images first.
-    const official = knownOfficialImage(phone);
+    // =====================================================
+    // 1. DIRECT DATASET IMAGE — FIRST PRIORITY
+    // =====================================================
 
-    if (official) {
-        if (id) imageUrlCache.set(id, official);
-        return official;
-    }
-
-    // 2. Use a real direct image from the dataset only when it is
-    // already an image URL. Do NOT mine source_urls for images.
     const direct = extractImageUrl(phone);
 
     const isProxyFallback =
-        direct.startsWith(`${PUBLIC_BASE_URL}/api/phone-image/`);
+        direct.startsWith(
+            `${PUBLIC_BASE_URL}/api/phone-image/`
+        );
 
-    if (direct && !isProxyFallback && !isGenericWikipediaSource(direct)) {
-        if (id) imageUrlCache.set(id, direct);
+    if (
+        direct &&
+        !isProxyFallback &&
+        !isGenericWikipediaSource(direct)
+    ) {
+
+        console.log(
+            `Direct dataset image found: ${phone.name} -> ${direct}`
+        );
+
+        if (id) {
+            imageUrlCache.set(id, direct);
+        }
+
         return direct;
     }
 
-    // 3. Exact model search on Wikipedia, not the generic source page.
-    const wikipediaImage = await resolveImageFromWikipedia(phone);
+    // =====================================================
+    // 2. KNOWN OFFICIAL IMAGE
+    // =====================================================
+
+    const official =
+        knownOfficialImage(phone);
+
+    if (official) {
+
+        console.log(
+            `Official image found: ${phone.name} -> ${official}`
+        );
+
+        if (id) {
+            imageUrlCache.set(id, official);
+        }
+
+        return official;
+    }
+
+    // =====================================================
+    // 3. GSMARENA FALLBACK
+    // =====================================================
+
+    const gsmArenaImage =
+        await resolveImageFromGSMArena(phone);
+
+    if (gsmArenaImage) {
+
+        console.log(
+            `GSMArena image found: ${phone.name} -> ${gsmArenaImage}`
+        );
+
+        if (id) {
+            imageUrlCache.set(
+                id,
+                gsmArenaImage
+            );
+        }
+
+        return gsmArenaImage;
+    }
+
+    // =====================================================
+    // 4. WIKIPEDIA FALLBACK
+    // =====================================================
+
+    const wikipediaImage =
+        await resolveImageFromWikipedia(phone);
 
     if (wikipediaImage) {
-        if (id) imageUrlCache.set(id, wikipediaImage);
+
+        console.log(
+            `Wikipedia image found: ${phone.name} -> ${wikipediaImage}`
+        );
+
+        if (id) {
+            imageUrlCache.set(
+                id,
+                wikipediaImage
+            );
+        }
+
         return wikipediaImage;
     }
 
-    // 4. As a last resort, try source pages only when they are not
-    // generic "List of ..." pages. This prevents unrelated phone images.
+    // =====================================================
+    // 5. SOURCE PAGE FALLBACK
+    // =====================================================
+
     const sources =
         Array.isArray(phone.source_urls)
-            ? phone.source_urls.filter(Boolean).slice(0, 3)
+            ? phone.source_urls
+                .filter(Boolean)
+                .slice(0, 3)
             : [];
 
     for (const sourceUrl of sources) {
 
-        if (isGenericWikipediaSource(sourceUrl)) {
+        if (
+            isGenericWikipediaSource(
+                sourceUrl
+            )
+        ) {
             continue;
         }
 
         try {
 
-            const response = await fetch(sourceUrl, {
-                redirect: "follow",
-                headers: {
-                    "User-Agent": "PhoneHub/1.0 (+image resolver)"
-                },
-                signal: AbortSignal.timeout(8000)
-            });
+            const response =
+                await fetch(
+                    sourceUrl,
+                    {
+                        redirect: "follow",
+
+                        headers: {
+                            "User-Agent":
+                                "PhoneHub/1.0 (+image resolver)"
+                        },
+
+                        signal:
+                            AbortSignal.timeout(
+                                8000
+                            )
+                    }
+                );
 
             if (!response.ok) {
                 continue;
             }
 
             const contentType =
-                response.headers.get("content-type") || "";
+                response.headers.get(
+                    "content-type"
+                ) || "";
 
-            if (!contentType.includes("text/html")) {
+            if (
+                !contentType.includes(
+                    "text/html"
+                )
+            ) {
                 continue;
             }
 
-            const html = await response.text();
-            const imageUrl = extractOgImage(html, response.url || sourceUrl);
+            const html =
+                await response.text();
 
-            if (imageUrl && !isGenericWikipediaSource(imageUrl)) {
-                if (id) imageUrlCache.set(id, imageUrl);
+            const imageUrl =
+                extractOgImage(
+                    html,
+                    response.url ||
+                        sourceUrl
+                );
+
+            if (
+                imageUrl &&
+                !isGenericWikipediaSource(
+                    imageUrl
+                )
+            ) {
+
+                console.log(
+                    `Source page image found: ${phone.name} -> ${imageUrl}`
+                );
+
+                if (id) {
+                    imageUrlCache.set(
+                        id,
+                        imageUrl
+                    );
+                }
+
                 return imageUrl;
             }
 
         } catch (_) {
-            // Continue.
+
+            // Continue to next source.
+
         }
     }
 
+    // =====================================================
+    // 6. NOTHING FOUND
+    // =====================================================
+
+    console.log(
+        `No image found: ${phone.name}`
+    );
+
     if (id) {
-        imageUrlCache.set(id, "");
+        imageUrlCache.set(
+            id,
+            ""
+        );
     }
 
     return "";
 }
 
+app.get(
+    "/api/debug-image/:id",
+    async (req, res) => {
+        try {
+            const requestedId = String(req.params.id || "").trim();
+            const phones = await loadGetTechIndex();
+            const phone =
+                phones.find(item => String(item.id || "").toLowerCase() === requestedId.toLowerCase()) ||
+                phones.find(item => String(item.name || "").toLowerCase() === requestedId.toLowerCase());
+
+            if (!phone) {
+                return res.status(404).json({ success: false, message: "Phone not found" });
+            }
+
+            const direct = extractImageUrl(phone);
+            const gsmArena = await resolveImageFromGSMArena(phone);
+            const wikipedia = await resolveImageFromWikipedia(phone);
+
+            return res.json({
+                success: true,
+                phone: { id: phone.id, brand: phone.brand, name: phone.name },
+                directImage: direct || null,
+                gsmArenaImage: gsmArena || null,
+                wikipediaImage: wikipedia || null,
+                finalImage: gsmArena || direct || wikipedia || null
+            });
+        } catch (error) {
+            return res.status(500).json({ success: false, message: error.message });
+        }
+    }
+);
 
 app.get(
     "/api/phone-image/:id",
@@ -1232,7 +1556,7 @@ app.get(
                         item.id ||
                         item.base_model_slug ||
                         ""
-                    ) === requestedId
+                    ).toLowerCase() === requestedId.toLowerCase()
                 ) ||
                 phones.find(item =>
                     String(item.name || "")
@@ -1250,7 +1574,79 @@ app.get(
                 return res.status(404).send("Image not available");
             }
 
-            return res.redirect(302, imageUrl);
+            console.log(
+                `Serving image: ${phone.name} -> ${imageUrl}`
+            );
+
+            // Fetch the real image on the server.
+            // Android will receive the image directly instead
+            // of following a 302 redirect.
+            const imageResponse =
+                await fetch(imageUrl, {
+                    redirect: "follow",
+                    headers: {
+                        "User-Agent":
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36",
+                        "Accept":
+                            "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+                    },
+                    signal: AbortSignal.timeout(15000)
+                });
+
+            if (!imageResponse.ok) {
+
+                console.log(
+                    `Image fetch failed: ${imageResponse.status} ${imageResponse.statusText}`
+                );
+
+                return res
+                    .status(502)
+                    .send("Unable to fetch phone image");
+            }
+
+            const contentType =
+                imageResponse.headers.get("content-type") ||
+                "image/jpeg";
+
+            if (!contentType.toLowerCase().startsWith("image/")) {
+
+                console.log(
+                    `Invalid image content type: ${contentType}`
+                );
+
+                return res
+                    .status(502)
+                    .send("Source did not return an image");
+            }
+
+            const arrayBuffer =
+                await imageResponse.arrayBuffer();
+
+            const buffer =
+                Buffer.from(arrayBuffer);
+
+            if (!buffer.length) {
+                return res
+                    .status(502)
+                    .send("Empty image response");
+            }
+
+            res.setHeader(
+                "Content-Type",
+                contentType
+            );
+
+            res.setHeader(
+                "Content-Length",
+                buffer.length
+            );
+
+            res.setHeader(
+                "Cache-Control",
+                "public, max-age=86400"
+            );
+
+            return res.send(buffer);
 
         } catch (error) {
 
@@ -1259,11 +1655,12 @@ app.get(
                 error.message
             );
 
-            return res.status(500).send("Image resolver error");
+            return res
+                .status(500)
+                .send("Image resolver error");
         }
     }
 );
-
 
 /* =========================================================
    API: LATEST PHONES
@@ -2357,7 +2754,7 @@ app.listen(
         );
 
         console.log(
-            "GSMArena: DISABLED"
+            "GSMArena: ENABLED (lazy image resolver)"
         );
 
         console.log(
