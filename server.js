@@ -12,6 +12,10 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const HOST = "0.0.0.0";
 
+const PUBLIC_BASE_URL =
+    (process.env.PUBLIC_BASE_URL || "https://phonehub-backend-bbx9.onrender.com")
+        .replace(/\/$/, "");
+
 /* =========================================================
    APP CONFIG
 ========================================================= */
@@ -163,7 +167,7 @@ function formatDisplay(display) {
         }
 
         if (parts.length > 0) {
-            return parts.join(" • ");
+            return parts.join(" â€¢ ");
         }
     }
 
@@ -307,6 +311,351 @@ function formatCamera(phone) {
 
 
 /* =========================================================
+   ROBUST IMAGE / DISPLAY EXTRACTION
+========================================================= */
+
+function normalizeUrl(value) {
+
+    if (!value) {
+        return "";
+    }
+
+    const text = String(value).trim();
+
+    if (text.startsWith("//")) {
+        return "https:" + text;
+    }
+
+    if (
+        text.startsWith("http://") ||
+        text.startsWith("https://")
+    ) {
+        return text;
+    }
+
+    return "";
+}
+
+
+function findImageDeep(value, depth = 0) {
+
+    if (depth > 8 || value === null || value === undefined) {
+        return "";
+    }
+
+    if (typeof value !== "object") {
+        return "";
+    }
+
+    const priorityKeys = [
+        "image",
+        "image_url",
+        "imageUrl",
+        "img",
+        "img_url",
+        "imgUrl",
+        "thumbnail",
+        "thumbnail_url",
+        "thumbnailUrl",
+        "photo",
+        "photo_url",
+        "photoUrl",
+        "picture",
+        "picture_url",
+        "pictureUrl",
+        "front_image",
+        "front_image_url",
+        "frontImage",
+        "main_image",
+        "mainImage",
+        "hero_image",
+        "heroImage"
+    ];
+
+    for (const key of priorityKeys) {
+
+        if (Object.prototype.hasOwnProperty.call(value, key)) {
+
+            const child = value[key];
+
+            if (typeof child === "string") {
+                const url = normalizeUrl(child);
+                if (url) {
+                    return url;
+                }
+            }
+
+            if (child && typeof child === "object") {
+                const found = findImageDeep(child, depth + 1);
+                if (found) {
+                    return found;
+                }
+            }
+        }
+    }
+
+    // IMPORTANT: Do not scan arbitrary strings, source_urls, links,
+    // or generic URL arrays. That was causing unrelated Wikipedia
+    // images to be selected as phone images.
+    for (const [key, child] of Object.entries(value)) {
+
+        const lowerKey = String(key).toLowerCase();
+
+        if (
+            lowerKey.includes("image") ||
+            lowerKey.includes("thumbnail") ||
+            lowerKey === "img" ||
+            lowerKey.includes("photo") ||
+            lowerKey.includes("picture")
+        ) {
+
+            const found = findImageDeep(child, depth + 1);
+
+            if (found) {
+                return found;
+            }
+        }
+    }
+
+    return "";
+}
+
+
+function extractImageUrl(phone) {
+
+    const direct =
+        normalizeUrl(
+            phone.image ||
+            phone.img ||
+            phone.image_url ||
+            phone.imageUrl ||
+            phone.thumbnail ||
+            phone.thumbnail_url ||
+            phone.thumbnailUrl ||
+            ""
+        );
+
+    if (direct) {
+        return direct;
+    }
+
+    if (phone.raw) {
+
+        const rawImage = findImageDeep(phone.raw);
+
+        if (rawImage) {
+            return rawImage;
+        }
+    }
+
+    return "";
+}
+
+
+function normalizeModelText(value) {
+    return String(value || "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+
+function knownOfficialImage(phone) {
+
+    const id = normalizeModelText(
+        phone.slug || phone.id || phone.base_model_slug || ""
+    );
+
+    const name = normalizeModelText(phone.name || "");
+
+    // Apple iPhone Duo — official Apple newsroom image.
+    if (
+        id === "iphone duo" ||
+        id === "iphone-duo" ||
+        name === "iphone duo"
+    ) {
+        return "https://www.apple.com/newsroom/images/2026/09/apple-unveils-iphone-duo/article/Apple-iPhone-Duo-colors-260909_big.jpg.large.jpg";
+    }
+
+    return "";
+}
+
+
+async function resolveImageFromWikipedia(phone) {
+
+    const brand = String(phone.brand || "").trim();
+    const name = String(phone.name || "").trim();
+
+    if (!name) {
+        return "";
+    }
+
+    const query = [brand, name]
+        .filter(Boolean)
+        .join(" ");
+
+    const apiUrl =
+        "https://en.wikipedia.org/w/api.php" +
+        "?action=query" +
+        "&generator=search" +
+        "&gsrnamespace=0" +
+        "&gsrlimit=5" +
+        "&gsrsearch=" + encodeURIComponent(query) +
+        "&prop=pageimages" +
+        "&piprop=thumbnail" +
+        "&pithumbsize=1000" +
+        "&format=json";
+
+    try {
+
+        const response = await fetch(apiUrl, {
+            redirect: "follow",
+            headers: {
+                "User-Agent": "PhoneHub/1.0 (exact phone image resolver)"
+            },
+            signal: AbortSignal.timeout(8000)
+        });
+
+        if (!response.ok) {
+            return "";
+        }
+
+        const json = await response.json();
+        const pages = json && json.query && json.query.pages
+            ? Object.values(json.query.pages)
+            : [];
+
+        const wanted = normalizeModelText(name);
+        const wantedTokens = wanted
+            .split(" ")
+            .filter(token => token.length >= 2);
+
+        // Prefer a page whose title closely matches the exact model.
+        pages.sort((a, b) => {
+            const at = normalizeModelText(a.title || "");
+            const bt = normalizeModelText(b.title || "");
+
+            const as = at === wanted ? 100 : wantedTokens.filter(t => at.includes(t)).length;
+            const bs = bt === wanted ? 100 : wantedTokens.filter(t => bt.includes(t)).length;
+
+            return bs - as;
+        });
+
+        for (const page of pages) {
+
+            const title = normalizeModelText(page.title || "");
+            const thumb = page.thumbnail && page.thumbnail.source
+                ? page.thumbnail.source
+                : "";
+
+            if (!thumb) {
+                continue;
+            }
+
+            const strongMatch =
+                title === wanted ||
+                (wantedTokens.length >= 2 &&
+                 wantedTokens.every(token => title.includes(token)));
+
+            if (strongMatch) {
+                return thumb;
+            }
+        }
+
+    } catch (_) {
+        // Exact search failed; caller will continue to next source.
+    }
+
+    return "";
+}
+
+
+function isGenericWikipediaSource(url) {
+
+    const value = String(url || "").toLowerCase();
+
+    return (
+        value.includes("/wiki/list_of_") ||
+        value.includes("/wiki/list of ") ||
+        value.includes("wikipedia.org/wiki/list")
+    );
+}
+
+
+function extractDisplayValue(phone) {
+
+    if (phone.display) {
+        return phone.display;
+    }
+
+    const candidates = [
+        phone.screen,
+        phone.display_spec,
+        phone.displaySpecs,
+        phone.screen_spec,
+        phone.screenSpecs
+    ];
+
+    for (const value of candidates) {
+
+        if (value) {
+            return formatDisplay(value);
+        }
+    }
+
+    if (phone.raw && typeof phone.raw === "object") {
+
+        const raw = phone.raw;
+
+        const rawCandidates = [
+            raw.display,
+            raw.screen,
+            raw.display_spec,
+            raw.displaySpecs,
+            raw.screen_spec,
+            raw.screenSpecs
+        ];
+
+        for (const value of rawCandidates) {
+
+            if (value) {
+                return formatDisplay(value);
+            }
+        }
+
+        const rawText = JSON.stringify(raw).toLowerCase();
+
+        if (
+            rawText.includes("display") ||
+            rawText.includes("screen")
+        ) {
+
+            for (const [key, value] of Object.entries(raw)) {
+
+                const k = String(key).toLowerCase();
+
+                if (
+                    k.includes("display") ||
+                    k.includes("screen")
+                ) {
+
+                    const formatted =
+                        formatDisplay(value);
+
+                    if (formatted !== "-") {
+                        return formatted;
+                    }
+                }
+            }
+        }
+    }
+
+    return "-";
+}
+
+
+/* =========================================================
    NORMALIZE GETTECH PHONE
 ========================================================= */
 
@@ -364,8 +713,8 @@ function normalizePhone(phone, index = 0) {
 
         display:
 
-            formatDisplay(
-                phone.display
+            extractDisplayValue(
+                phone
             ),
 
         processor:
@@ -407,12 +756,15 @@ function normalizePhone(phone, index = 0) {
 
         image:
 
-            safeString(
-                phone.image ||
-                phone.img ||
-                "",
-                ""
-            ),
+            extractImageUrl(
+                phone
+            ) ||
+            `${PUBLIC_BASE_URL}/api/phone-image/${encodeURIComponent(
+                phone.slug ||
+                phone.id ||
+                phone.base_model_slug ||
+                `gettech-${index}`
+            )}`,
 
         release_date:
 
@@ -440,10 +792,12 @@ function normalizePhone(phone, index = 0) {
                 phone.source_urls
             )
                 ? phone.source_urls
-                : []
+                : [],
+
+        // Do not keep the full original JSON object in RAM.
+        // The normalized fields above are sufficient for the API.
     };
 }
-
 
 
 /* =========================================================
@@ -704,6 +1058,208 @@ app.get(
                     error.message
 
             });
+        }
+    }
+);
+
+
+/* =========================================================
+   IMAGE FALLBACK / PROXY
+========================================================= */
+
+const imageUrlCache = new Map();
+
+
+function absoluteUrl(url, baseUrl) {
+
+    try {
+        return new URL(url, baseUrl).toString();
+    } catch (_) {
+        return "";
+    }
+}
+
+
+function extractOgImage(html, pageUrl) {
+
+    if (!html) {
+        return "";
+    }
+
+    const patterns = [
+        /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["'][^>]*>/i,
+        /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["'][^>]*>/i,
+        /<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["'][^>]*>/i,
+        /<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image["'][^>]*>/i,
+        /<link[^>]+rel=["'][^"']*image_src[^"']*["'][^>]+href=["']([^"']+)["'][^>]*>/i
+    ];
+
+    for (const pattern of patterns) {
+
+        const match =
+            html.match(pattern);
+
+        if (match && match[1]) {
+
+            const resolved =
+                absoluteUrl(match[1], pageUrl);
+
+            if (resolved) {
+                return resolved;
+            }
+        }
+    }
+
+    return "";
+}
+
+
+async function resolveImageFromSources(phone) {
+
+    const id =
+        phone.slug ||
+        phone.id ||
+        phone.base_model_slug ||
+        "";
+
+    if (id && imageUrlCache.has(id)) {
+        return imageUrlCache.get(id);
+    }
+
+    // 1. Known official product images first.
+    const official = knownOfficialImage(phone);
+
+    if (official) {
+        if (id) imageUrlCache.set(id, official);
+        return official;
+    }
+
+    // 2. Use a real direct image from the dataset only when it is
+    // already an image URL. Do NOT mine source_urls for images.
+    const direct = extractImageUrl(phone);
+
+    const isProxyFallback =
+        direct.startsWith(`${PUBLIC_BASE_URL}/api/phone-image/`);
+
+    if (direct && !isProxyFallback && !isGenericWikipediaSource(direct)) {
+        if (id) imageUrlCache.set(id, direct);
+        return direct;
+    }
+
+    // 3. Exact model search on Wikipedia, not the generic source page.
+    const wikipediaImage = await resolveImageFromWikipedia(phone);
+
+    if (wikipediaImage) {
+        if (id) imageUrlCache.set(id, wikipediaImage);
+        return wikipediaImage;
+    }
+
+    // 4. As a last resort, try source pages only when they are not
+    // generic "List of ..." pages. This prevents unrelated phone images.
+    const sources =
+        Array.isArray(phone.source_urls)
+            ? phone.source_urls.filter(Boolean).slice(0, 3)
+            : [];
+
+    for (const sourceUrl of sources) {
+
+        if (isGenericWikipediaSource(sourceUrl)) {
+            continue;
+        }
+
+        try {
+
+            const response = await fetch(sourceUrl, {
+                redirect: "follow",
+                headers: {
+                    "User-Agent": "PhoneHub/1.0 (+image resolver)"
+                },
+                signal: AbortSignal.timeout(8000)
+            });
+
+            if (!response.ok) {
+                continue;
+            }
+
+            const contentType =
+                response.headers.get("content-type") || "";
+
+            if (!contentType.includes("text/html")) {
+                continue;
+            }
+
+            const html = await response.text();
+            const imageUrl = extractOgImage(html, response.url || sourceUrl);
+
+            if (imageUrl && !isGenericWikipediaSource(imageUrl)) {
+                if (id) imageUrlCache.set(id, imageUrl);
+                return imageUrl;
+            }
+
+        } catch (_) {
+            // Continue.
+        }
+    }
+
+    if (id) {
+        imageUrlCache.set(id, "");
+    }
+
+    return "";
+}
+
+
+app.get(
+    "/api/phone-image/:id",
+    async (req, res) => {
+
+        try {
+
+            const requestedId =
+                String(req.params.id || "").trim();
+
+            if (!requestedId) {
+                return res.status(400).send("Missing phone id");
+            }
+
+            const phones =
+                await loadGetTechIndex();
+
+            const phone =
+                phones.find(item =>
+                    String(
+                        item.slug ||
+                        item.id ||
+                        item.base_model_slug ||
+                        ""
+                    ) === requestedId
+                ) ||
+                phones.find(item =>
+                    String(item.name || "")
+                        .toLowerCase() === requestedId.toLowerCase()
+                );
+
+            if (!phone) {
+                return res.status(404).send("Phone not found");
+            }
+
+            const imageUrl =
+                await resolveImageFromSources(phone);
+
+            if (!imageUrl) {
+                return res.status(404).send("Image not available");
+            }
+
+            return res.redirect(302, imageUrl);
+
+        } catch (error) {
+
+            console.log(
+                "Phone image error:",
+                error.message
+            );
+
+            return res.status(500).send("Image resolver error");
         }
     }
 );
@@ -1708,7 +2264,7 @@ app.get(
                 <div class="box">
 
                     <h1>
-                        📱 PhoneHub API
+                        ðŸ“± PhoneHub API
                     </h1>
 
                     <p>
@@ -1828,7 +2384,6 @@ app.listen(
             );
     }
 );
-
 
 
 
