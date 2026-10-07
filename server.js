@@ -1,4 +1,4 @@
-﻿require("dotenv").config();
+require("dotenv").config();
 
 const express = require("express");
 const cors = require("cors");
@@ -163,7 +163,7 @@ function formatDisplay(display) {
         }
 
         if (parts.length > 0) {
-            return parts.join(" â€¢ ");
+            return parts.join(" • ");
         }
     }
 
@@ -440,13 +440,10 @@ function normalizePhone(phone, index = 0) {
                 phone.source_urls
             )
                 ? phone.source_urls
-                : [],
-
-        raw:
-
-            phone
+                : []
     };
 }
+
 
 
 /* =========================================================
@@ -1711,7 +1708,7 @@ app.get(
                 <div class="box">
 
                     <h1>
-                        ðŸ“± PhoneHub API
+                        📱 PhoneHub API
                     </h1>
 
                     <p>
@@ -1831,6 +1828,7 @@ app.listen(
             );
     }
 );
+
 
 
 
